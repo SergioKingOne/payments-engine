@@ -13,6 +13,11 @@ rust_decimal = "1.43"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 
+[dev-dependencies]
+# 1.12 requires Rust 1.88, above our MSRV. Without default features we skip the fork/timeout
+# runner (rusty-fork, tempfile), which these tests do not use.
+proptest = { version = "~1.11", default-features = false, features = ["std"] }
+
 [lints.rust]
 unsafe_code = "forbid"
 
