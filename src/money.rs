@@ -54,11 +54,28 @@ impl Amount {
 impl FromStr for Amount {
     type Err = AmountError;
 
-    /// Parses exactly: never rounds and never accepts scientific notation, unlike
-    /// `Decimal::from_str`.
+    /// Parses exactly: an optional sign, digits and at most one decimal point. Never rounds, and
+    /// rejects what `Decimal`'s own parsers tolerate: scientific notation, and `_` between
+    /// digits (`1__0` would otherwise read as 10).
     fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        let value = Decimal::from_str_exact(raw).map_err(|_| AmountError::Invalid(raw.into()))?;
+        let digits = raw.strip_prefix(['+', '-']).unwrap_or(raw);
+        let well_formed = !digits.is_empty()
+            && digits.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+            && digits.bytes().filter(|&b| b == b'.').count() <= 1;
+        let value = well_formed
+            .then(|| Decimal::from_str_exact(raw).ok())
+            .flatten()
+            .ok_or_else(|| AmountError::Invalid(excerpt(raw)))?;
         Self::new(value)
+    }
+}
+
+/// At most the first 32 characters of `raw`, so a huge junk field cannot flood the diagnostics.
+fn excerpt(raw: &str) -> String {
+    const MAX_CHARS: usize = 32;
+    match raw.char_indices().nth(MAX_CHARS) {
+        Some((end, _)) => format!("{}...", raw.get(..end).unwrap_or_default()),
+        None => raw.to_owned(),
     }
 }
 
@@ -222,13 +239,31 @@ mod tests {
 
     #[test]
     fn amount_rejects_non_numbers() {
-        for raw in ["", "abc", "1.2.3", "1,5"] {
+        for raw in [
+            "", "abc", "1.2.3", "1,5", "1_000", "1__0", "_1", "0x10", "+", ".", "--1", " 1",
+        ] {
             assert_eq!(
                 raw.parse::<Amount>(),
                 Err(AmountError::Invalid(raw.into())),
                 "{raw:?}"
             );
         }
+    }
+
+    #[test]
+    fn amount_accepts_sign_and_bare_decimal_point() {
+        assert_eq!(amount("+2").value(), dec("2"));
+        assert_eq!(amount(".5").value(), dec("0.5"));
+        assert_eq!(amount("3.").value(), dec("3"));
+    }
+
+    #[test]
+    fn invalid_amount_is_quoted_in_part() {
+        let raw = "9".repeat(10_000) + "x";
+        let Err(AmountError::Invalid(quoted)) = raw.parse::<Amount>() else {
+            panic!("expected Invalid");
+        };
+        assert_eq!(quoted, "9".repeat(32) + "...");
     }
 
     #[test]
