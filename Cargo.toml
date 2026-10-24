@@ -14,3 +14,13 @@ unsafe_code = "forbid"
 [lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
+# Cherry-picked from `restriction` (the Clippy book advises against enabling the whole group).
+# Money code must not panic on data, wrap on overflow, or touch floats; stdout is reserved for the CSV.
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+indexing_slicing = "warn"
+arithmetic_side_effects = "warn"
+float_arithmetic = "warn"
+print_stdout = "warn"
+dbg_macro = "warn"
