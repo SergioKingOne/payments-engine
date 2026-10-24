@@ -9,3 +9,6 @@
 *.pdf
 
 .DS_Store
+
+# cargo-mutants reports
+/mutants.out*
