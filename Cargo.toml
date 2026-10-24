@@ -7,6 +7,11 @@ description = "A toy payments engine: streams transactions from CSV, outputs cli
 publish = false
 
 [dependencies]
+anyhow = "1"
+csv = "1.4"
+rust_decimal = "1.43"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
 
 [lints.rust]
 unsafe_code = "forbid"
