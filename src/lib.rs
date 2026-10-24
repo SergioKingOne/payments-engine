@@ -21,16 +21,18 @@ use csv_io::{ParsedRow, TransactionReader};
 /// balances as CSV to `output`.
 ///
 /// A row that cannot be parsed, or that the engine rejects, is skipped and reported as one line
-/// on `diagnostics` (`line N: reason`). Processing always continues with the next row.
+/// on `diagnostics` (`row N: reason`, counting data rows from 1, so not the header or blank
+/// lines). Processing always continues with the next row.
 ///
 /// # Errors
 ///
-/// Returns an error only for I/O failures: reading `input`, or writing `output` or
-/// `diagnostics`.
+/// Returns an error for I/O failures (reading `input`, writing `output` or `diagnostics`), and
+/// for a header that lacks the `type`, `client` or `tx` column. Nothing is written to `output`
+/// in that case.
 pub fn run<R: Read, W: Write, E: Write>(input: R, output: W, mut diagnostics: E) -> io::Result<()> {
     let mut engine = Engine::default();
     for row in TransactionReader::new(input)? {
-        let ParsedRow { line, transaction } = row?;
+        let ParsedRow { row, transaction } = row?;
         let rejection = match transaction {
             Ok(transaction) => engine.apply(transaction).err().map(|error| {
                 format!(
@@ -41,8 +43,8 @@ pub fn run<R: Read, W: Write, E: Write>(input: R, output: W, mut diagnostics: E)
             Err(error) => Some(error.to_string()),
         };
         if let Some(reason) = rejection {
-            match line {
-                Some(line) => writeln!(diagnostics, "line {line}: {reason}")?,
+            match row {
+                Some(row) => writeln!(diagnostics, "row {row}: {reason}")?,
                 None => writeln!(diagnostics, "{reason}")?,
             }
         }
@@ -82,7 +84,7 @@ mod tests {
         );
         assert_eq!(
             diagnostics,
-            "line 6: client 2, tx 5: insufficient funds: 2 available, 3 requested\n"
+            "row 5: client 2, tx 5: insufficient funds: 2 available, 3 requested\n"
         );
     }
 
@@ -100,8 +102,8 @@ mod tests {
         );
         assert_eq!(
             diagnostics,
-            "line 3: invalid amount: \"abc\" is not a decimal number\n\
-             line 4: client 1, tx 99: no deposit with this id for this client\n"
+            "row 2: invalid amount: \"abc\" is not a decimal number\n\
+             row 3: client 1, tx 99: no deposit with this id for this client\n"
         );
     }
 
@@ -121,7 +123,7 @@ mod tests {
              1,-8.0000,0.0000,-8.0000,true\n\
              2,1.2345,0.0000,1.2345,false\n"
         );
-        assert_eq!(diagnostics, "line 6: client 1, tx 3: account is locked\n");
+        assert_eq!(diagnostics, "row 5: client 1, tx 3: account is locked\n");
     }
 
     #[test]
@@ -130,6 +132,19 @@ mod tests {
             run_on(""),
             ("client,available,held,total,locked\n".into(), String::new())
         );
+    }
+
+    #[test]
+    fn missing_header_writes_nothing_to_output() {
+        let (mut output, mut diagnostics) = (Vec::new(), Vec::new());
+        let error = run(
+            "deposit,1,1,1.0\n".as_bytes(),
+            &mut output,
+            &mut diagnostics,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!((output, diagnostics), (Vec::new(), Vec::new()));
     }
 
     #[test]

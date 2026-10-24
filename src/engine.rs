@@ -3,6 +3,7 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
+use std::fmt;
 
 use rust_decimal::Decimal;
 
@@ -164,6 +165,16 @@ pub enum DepositState {
     ChargedBack,
 }
 
+impl fmt::Display for DepositState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Settled => "settled",
+            Self::Disputed => "disputed",
+            Self::ChargedBack => "charged back",
+        })
+    }
+}
+
 /// Why a transaction was rejected. Every variant is an expected outcome of partner data, not a
 /// bug in the engine.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -179,7 +190,7 @@ pub enum TxError {
     },
     #[error("no deposit with this id for this client")]
     UnknownTx,
-    #[error("deposit is {actual:?}, expected {expected:?}")]
+    #[error("deposit is {actual}, must be {expected}")]
     WrongState {
         expected: DepositState,
         actual: DepositState,
@@ -448,6 +459,22 @@ mod tests {
             ));
         }
         assert_account(&e, 1, ("0", "0", "0", true));
+    }
+
+    #[test]
+    fn wrong_state_message_names_both_states() {
+        let mut e = engine(&[deposit(1, 1, "1"), dispute(1, 1), chargeback(1, 1)]);
+        let messages: Vec<_> = [dispute(1, 1), resolve(1, 1)]
+            .into_iter()
+            .map(|t| e.apply(t).unwrap_err().to_string())
+            .collect();
+        assert_eq!(
+            messages,
+            [
+                "deposit is charged back, must be settled",
+                "deposit is charged back, must be disputed"
+            ]
+        );
     }
 
     #[test]

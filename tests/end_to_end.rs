@@ -87,13 +87,13 @@ fn rejected_rows_are_reported_on_stderr_only() {
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stdout.lines().all(|line| !line.starts_with("line ")));
+    assert!(stdout.lines().all(|line| !line.starts_with("row ")));
     assert!(
-        stderr.lines().all(|line| line.starts_with("line ")),
+        stderr.lines().all(|line| line.starts_with("row ")),
         "{stderr}"
     );
     assert!(
-        stderr.contains("line 13: client 1, tx 9: insufficient funds"),
+        stderr.contains("row 12: client 1, tx 9: insufficient funds"),
         "{stderr}"
     );
 }
@@ -113,6 +113,17 @@ fn missing_argument_is_a_usage_error() {
 #[test]
 fn extra_argument_is_a_usage_error() {
     assert_fails_with(&run_binary(&["a.csv", "b.csv"]), "usage");
+}
+
+#[test]
+fn input_without_header_is_an_error() {
+    let dir = std::env::temp_dir().join(format!("payments-engine-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let input = dir.join("no_header.csv");
+    std::fs::write(&input, "deposit,1,1,1.0\ndeposit,1,2,2.0\n").unwrap();
+    let output = run_binary(&[&input]);
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_fails_with(&output, "header is missing column(s) type, client, tx");
 }
 
 #[test]

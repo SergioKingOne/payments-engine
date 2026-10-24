@@ -59,16 +59,18 @@ impl TryFrom<Row<'_>> for Transaction {
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum RowError {
     #[error("malformed row: {0}")]
-    Malformed(csv::Error),
+    Malformed(String),
     #[error("missing amount")]
     MissingAmount,
     #[error("invalid amount: {0}")]
     InvalidAmount(#[from] AmountError),
 }
 
-/// One input row: its line number, and the transaction it holds or why it holds none.
+/// One input row: its position, and the transaction it holds or why it holds none.
 pub(crate) struct ParsedRow {
-    pub(crate) line: Option<u64>,
+    /// 1-based count of data rows: the header and blank lines are not counted. The csv crate's
+    /// line numbers skip blank lines too, so they cannot be trusted to point at the right line.
+    pub(crate) row: Option<u64>,
     pub(crate) transaction: Result<Transaction, RowError>,
 }
 
@@ -76,7 +78,8 @@ pub(crate) struct ParsedRow {
 ///
 /// Leading and trailing whitespace is trimmed from every field and header, and rows may omit
 /// the trailing amount column. A bad row is yielded as a [`RowError`] and reading continues;
-/// only I/O errors end the stream.
+/// only I/O errors end the stream. A header without the required columns is rejected up front,
+/// since every row after it would fail.
 pub(crate) struct TransactionReader<R> {
     reader: csv::Reader<R>,
     headers: StringRecord,
@@ -90,6 +93,22 @@ impl<R: Read> TransactionReader<R> {
             .flexible(true)
             .from_reader(input);
         let headers = reader.headers()?.clone();
+        // An empty input has no header and no rows; that is a valid, empty batch.
+        if !headers.is_empty() {
+            let missing: Vec<_> = REQUIRED_COLUMNS
+                .into_iter()
+                .filter(|column| !headers.iter().any(|header| header == *column))
+                .collect();
+            if !missing.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "header is missing column(s) {}; expected `type, client, tx, amount`",
+                        missing.join(", ")
+                    ),
+                ));
+            }
+        }
         Ok(Self {
             reader,
             headers,
@@ -97,6 +116,9 @@ impl<R: Read> TransactionReader<R> {
         })
     }
 }
+
+/// `amount` is optional: dispute, resolve and chargeback rows may omit the column entirely.
+const REQUIRED_COLUMNS: [&str; 3] = ["type", "client", "tx"];
 
 impl<R: Read> Iterator for TransactionReader<R> {
     type Item = io::Result<ParsedRow>;
@@ -108,20 +130,40 @@ impl<R: Read> Iterator for TransactionReader<R> {
                 let transaction = self
                     .record
                     .deserialize::<Row<'_>>(Some(&self.headers))
-                    .map_err(RowError::Malformed)
+                    .map_err(|error| RowError::Malformed(describe(&error, &self.headers)))
                     .and_then(Transaction::try_from);
                 Some(Ok(ParsedRow {
-                    line: self.record.position().map(csv::Position::line),
+                    row: self.record.position().map(csv::Position::record),
                     transaction,
                 }))
             }
             Err(error) if error.is_io_error() => Some(Err(error.into())),
             // The bad record has been consumed, so the next call moves on to the next row.
             Err(error) => Some(Ok(ParsedRow {
-                line: error.position().map(csv::Position::line),
-                transaction: Err(RowError::Malformed(error)),
+                row: error.position().map(csv::Position::record),
+                transaction: Err(RowError::Malformed(describe(&error, &self.headers))),
             })),
         }
+    }
+}
+
+/// What is wrong with a row, naming the column, without csv's own position (the caller already
+/// reports the row).
+fn describe(error: &csv::Error, headers: &StringRecord) -> String {
+    let column = |index: Option<usize>| index.and_then(|index| headers.get(index));
+    match error.kind() {
+        csv::ErrorKind::Deserialize { err, .. } => {
+            let index = err.field().and_then(|index| usize::try_from(index).ok());
+            match column(index) {
+                Some(name) => format!("{name}: {}", err.kind()),
+                None => err.kind().to_string(),
+            }
+        }
+        csv::ErrorKind::Utf8 { err, .. } => match column(Some(err.field())) {
+            Some(name) => format!("{name}: invalid UTF-8"),
+            None => "invalid UTF-8".into(),
+        },
+        _ => error.to_string(),
     }
 }
 
@@ -170,9 +212,16 @@ mod tests {
             .unwrap()
             .map(|row| {
                 let row = row.unwrap();
-                (row.line, row.transaction.map_err(|e| e.to_string()))
+                (row.row, row.transaction.map_err(|e| e.to_string()))
             })
             .collect()
+    }
+
+    fn header_error(input: &str) -> String {
+        match TransactionReader::new(input.as_bytes()) {
+            Ok(_) => panic!("header accepted: {input:?}"),
+            Err(error) => error.to_string(),
+        }
     }
 
     fn transactions(input: &str) -> Vec<Transaction> {
@@ -253,8 +302,8 @@ mod tests {
         assert_eq!(
             rows,
             [
+                (Some(1), Err("missing amount".into())),
                 (Some(2), Err("missing amount".into())),
-                (Some(3), Err("missing amount".into())),
             ]
         );
     }
@@ -265,7 +314,7 @@ mod tests {
         assert_eq!(
             rows,
             [(
-                Some(2),
+                Some(1),
                 Err("invalid amount: amount has 5 decimal places; at most 4 are allowed".into())
             )]
         );
@@ -278,20 +327,76 @@ mod tests {
                      deposit,70000,2,1.0\n\
                      deposit,1,x,1.0\n\
                      deposit,1,4,1.0\n";
-        let rows = parse(input);
-        let lines: Vec<_> = rows
-            .iter()
-            .map(|(line, row)| (*line, row.is_ok()))
+        let rows: Vec<_> = parse(input)
+            .into_iter()
+            .map(|(row, result)| (row, result.err()))
             .collect();
         assert_eq!(
-            lines,
+            rows,
             [
-                (Some(2), false),
-                (Some(3), false),
-                (Some(4), false),
-                (Some(5), true)
+                (Some(1), Some("malformed row: unknown variant `refund`, expected one of `deposit`, `withdrawal`, `dispute`, `resolve`, `chargeback`".into())),
+                (Some(2), Some("malformed row: client: number too large to fit in target type".into())),
+                (Some(3), Some("malformed row: tx: invalid digit found in string".into())),
+                (Some(4), None),
             ]
         );
+    }
+
+    #[test]
+    fn rows_are_numbered_past_blank_lines() {
+        let input = "type,client,tx,amount\n\n\ndeposit,1,1,1\n\r\ndeposit,1,2,abc\n";
+        let rows: Vec<_> = parse(input).into_iter().map(|(row, _)| row).collect();
+        assert_eq!(rows, [Some(1), Some(2)]);
+    }
+
+    #[test]
+    fn header_without_required_columns_is_rejected() {
+        assert_eq!(
+            header_error("deposit,1,1,1.0\ndeposit,1,2,2.0\n"),
+            "header is missing column(s) type, client, tx; expected `type, client, tx, amount`"
+        );
+        assert_eq!(
+            header_error("kind,client,tx,amount\n"),
+            "header is missing column(s) type; expected `type, client, tx, amount`"
+        );
+    }
+
+    #[test]
+    fn header_columns_may_be_reordered_or_extra() {
+        let input = "tx,note,client,type,amount\n1,hi,2,deposit,1.5\n7,,2,dispute,\n";
+        assert_eq!(
+            transactions(input),
+            [
+                tx(2, 1, TxKind::Deposit(amount("1.5"))),
+                tx(2, 7, TxKind::Dispute)
+            ]
+        );
+        // `amount` itself is optional when no row needs it.
+        assert_eq!(
+            transactions("type,client,tx\ndispute,1,1\n"),
+            [tx(1, 1, TxKind::Dispute)]
+        );
+    }
+
+    /// A reader that yields `data`, then fails.
+    struct FailsAfter<'a>(&'a [u8]);
+
+    impl Read for FailsAfter<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.0.is_empty() {
+                return Err(io::Error::other("disk on fire"));
+            }
+            self.0.read(buf)
+        }
+    }
+
+    #[test]
+    fn io_error_mid_stream_ends_the_stream() {
+        let input = FailsAfter(b"type,client,tx,amount\ndeposit,1,1,1.0\n");
+        let mut reader = TransactionReader::new(input).unwrap();
+        assert!(reader.next().unwrap().unwrap().transaction.is_ok());
+        let error = reader.next().unwrap().err().unwrap();
+        assert_eq!(error.to_string(), "disk on fire");
     }
 
     #[test]
@@ -300,9 +405,12 @@ mod tests {
         input.extend_from_slice(b"deposit,1,2,1.0\n");
         let rows: Vec<_> = TransactionReader::new(input.as_slice())
             .unwrap()
-            .map(|row| row.unwrap().transaction.is_ok())
+            .map(|row| row.unwrap().transaction.map_err(|e| e.to_string()).err())
             .collect();
-        assert_eq!(rows, [false, true]);
+        assert_eq!(
+            rows,
+            [Some("malformed row: amount: invalid UTF-8".into()), None]
+        );
     }
 
     #[test]
