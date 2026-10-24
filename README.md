@@ -156,6 +156,28 @@ Order is preserved within each client, which is the only order the rules depend 
 streams is whatever the network delivers. The real system would also need a durable log in front
 of the shards, to be replayed after a crash.
 
+## Use of AI
+
+I built this with an AI coding assistant, Claude Code (Claude Opus 5.5), working in this
+repository. I set the goals and constraints, had the work broken into tickets, and approved each plan
+before it was built. The architecture and design choices were discussed with the assistant and
+agreed between us, and each one was recorded with its alternatives and sources. The assistant did
+the research, drafted the design, the code, the tests and this README, and ran the tools.
+
+Its output was not trusted on its own word:
+
+- Every design decision was recorded with the alternatives and sources behind it, and checked
+  against primary sources: the Rust and Cargo documentation, the crates' own source and issue
+  trackers, and how card networks and processors handle disputes.
+- Two independent review passes ran in fresh sessions with no access to the author's reasoning,
+  one on the design and one on the finished code. Every finding had to be reproduced before it
+  was acted on.
+- Claims were backed by evidence rather than by the assistant's say-so: runs of the real binary,
+  bugs planted to show a test catches them, mutation testing, and measurements.
+
+The full session transcript (prompts, responses, commands run and their output) is provided with
+the submission.
+
 ## Development
 
 ```sh
