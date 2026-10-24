@@ -1,0 +1,11 @@
+/target
+
+# Local-only working material (agent config, prompts, notes, write-ups)
+*.local.md
+.claude/
+.local/
+
+# The challenge brief must never be committed
+*.pdf
+
+.DS_Store

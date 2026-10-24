@@ -1,0 +1,16 @@
+[package]
+name = "payments-engine"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "A toy payments engine: streams transactions from CSV, outputs client account balances"
+publish = false
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
